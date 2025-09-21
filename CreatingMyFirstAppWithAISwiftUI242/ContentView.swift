@@ -7,6 +7,20 @@ struct Position: Hashable {
     let col: Int
 }
 
+private struct HeaderHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct ControlsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct TowerLevelStats {
     let damage: Int
     let range: Int
@@ -684,11 +698,73 @@ final class GameViewModel: ObservableObject {
 struct ContentView: View {
     @StateObject private var viewModel = GameViewModel()
     @State private var isMuted = false
+    @State private var headerHeight: CGFloat = 0
+    @State private var controlsHeight: CGFloat = 0
 
     var body: some View {
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: viewModel.columns)
+        GeometryReader { proxy in
+            let horizontalPadding: CGFloat = 20
+            let gridSpacing: CGFloat = 8
+            let gridOuterPadding: CGFloat = 10 // matching LazyVGrid .padding(10)
+            let availableWidth = max(proxy.size.width - horizontalPadding * 2, 10)
+            let widthForTiles = max(availableWidth - gridOuterPadding * 2, 10)
+            let widthTileCandidate = (widthForTiles - gridSpacing * CGFloat(viewModel.columns - 1)) / CGFloat(viewModel.columns)
 
-        return VStack(spacing: 18) {
+            let estimatedTopPadding: CGFloat = 32
+            let spacingBuffer: CGFloat = 36 // spacing before and after grid
+            let bottomPadding: CGFloat = 16
+            let availableHeight = max(proxy.size.height - headerHeight - controlsHeight - estimatedTopPadding - spacingBuffer - bottomPadding, 120)
+            let heightForTiles = max(availableHeight - gridOuterPadding * 2, 10)
+            let heightTileCandidate = (heightForTiles - gridSpacing * CGFloat(viewModel.rows - 1)) / CGFloat(viewModel.rows)
+
+            let minTileSize: CGFloat = 20
+            let maxTileSize: CGFloat = 44
+            let widthTile = widthTileCandidate.isFinite ? widthTileCandidate : minTileSize
+            let heightTile = heightTileCandidate.isFinite ? heightTileCandidate : minTileSize
+            let tileSize = max(minTileSize, min(maxTileSize, min(widthTile, heightTile)))
+            let columns = Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: viewModel.columns)
+
+            VStack(spacing: 18) {
+                headerSection
+
+                LazyVGrid(columns: columns, spacing: gridSpacing) {
+                    ForEach(0..<viewModel.rows, id: \.self) { row in
+                        ForEach(0..<viewModel.columns, id: \.self) { column in
+                            let position = Position(row: row, col: column)
+                            tileView(at: position, tileSize: tileSize)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Color.white.opacity(0.12))
+                )
+
+                controls
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.top, 32)
+            .padding(.horizontal, horizontalPadding)
+            .padding(.bottom)
+            .onAppear {
+                GameAudioManager.shared.playBackgroundLoop()
+                GameAudioManager.shared.setMuted(isMuted)
+            }
+            .onDisappear {
+                GameAudioManager.shared.stopBackgroundMusic()
+            }
+            .background(
+                LinearGradient(colors: [.mint.opacity(0.2), .blue.opacity(0.15)], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+            )
+            .onPreferenceChange(HeaderHeightKey.self) { headerHeight = $0 }
+            .onPreferenceChange(ControlsHeightKey.self) { controlsHeight = $0 }
+        }
+    }
+
+    private var headerSection: some View {
+        VStack(spacing: 18) {
             Text("🏯 Emoji 塔防 🧠")
                 .font(.title)
                 .fontWeight(.semibold)
@@ -706,36 +782,12 @@ struct ContentView: View {
                 .padding(.horizontal)
 
             towerSelector
-
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(0..<viewModel.rows, id: \.self) { row in
-                    ForEach(0..<viewModel.columns, id: \.self) { column in
-                        let position = Position(row: row, col: column)
-                        tileView(at: position)
-                    }
-                }
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(Color.white.opacity(0.12))
-            )
-            .padding(.horizontal)
-
-            controls
-        }
-        .padding(.top, 32)
-        .padding([.horizontal, .bottom])
-        .onAppear {
-            GameAudioManager.shared.playBackgroundLoop()
-            GameAudioManager.shared.setMuted(isMuted)
-        }
-        .onDisappear {
-            GameAudioManager.shared.stopBackgroundMusic()
         }
         .background(
-            LinearGradient(colors: [.mint.opacity(0.2), .blue.opacity(0.15)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
+            GeometryReader { geo in
+                Color.clear
+                    .preference(key: HeaderHeightKey.self, value: geo.size.height)
+            }
         )
     }
 
@@ -767,7 +819,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func tileView(at position: Position) -> some View {
+    private func tileView(at position: Position, tileSize: CGFloat) -> some View {
         let isPath = viewModel.pathPositions.contains(position)
         let highlight = viewModel.isPlacingTower && viewModel.canPlaceTower(at: position)
         let symbol = viewModel.tileSymbol(for: position)
@@ -808,7 +860,7 @@ struct ContentView: View {
                     .transition(.scale)
             }
         }
-        .frame(width: 58, height: 58)
+        .frame(width: tileSize, height: tileSize)
         .contentShape(Rectangle())
         .onTapGesture {
             if viewModel.isPlacingTower {
@@ -899,6 +951,12 @@ struct ContentView: View {
                 }
             }
         }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .preference(key: ControlsHeightKey.self, value: geo.size.height)
+            }
+        )
     }
 }
 
